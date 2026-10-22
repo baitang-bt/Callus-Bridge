@@ -56,6 +56,26 @@ def read_latest(chat_name: str = ""):
     return name, latest, info
 
 
+def merge_older_batch(ordered_ids: list[str], by_id: dict, batch: list[dict]) -> list[str]:
+    """Prepend newly seen rows from an upward-scroll window.
+
+    ``index`` is only valid inside one visible window, so we never sort by it.
+    ``batch`` is old→new (top of the list first). Ids not yet in ``by_id`` are
+    older messages revealed by Page_Up and go in front, keeping batch order.
+    """
+    before_ids = set(by_id)
+    new_ids: list[str] = []
+    for msg in batch:
+        mid = msg["id"]
+        by_id[mid] = msg
+        if mid not in before_ids:
+            new_ids.append(mid)
+    if not new_ids:
+        return ordered_ids
+    known = [mid for mid in ordered_ids if mid not in set(new_ids)]
+    return new_ids + known
+
+
 @synchronized
 def read_context(chat_name: str = "", limit: int = 0):
     """Collect up to ``limit`` messages by scrolling the message list upward.
@@ -71,8 +91,9 @@ def read_context(chat_name: str = "", limit: int = 0):
         return name, messages, info
 
     by_id = {m["id"]: m for m in messages}
+    ordered_ids = [m["id"] for m in messages]
     stagnant = 0
-    while len(by_id) < limit and stagnant < 3:
+    while len(ordered_ids) < limit and stagnant < 3:
         rect = geometry.node_physical_rect("list", chat.MESSAGE_LIST)
         if rect is None:
             break
@@ -82,15 +103,14 @@ def read_context(chat_name: str = "", limit: int = 0):
         inputmod.tap_key("Page_Up")
         time.sleep(0.35)
         _n, batch = chat.list_messages(chat=name, limit=0)
-        before = len(by_id)
-        for msg in batch:
-            by_id[msg["id"]] = msg
-        if len(by_id) == before:
+        before = len(ordered_ids)
+        ordered_ids = merge_older_batch(ordered_ids, by_id, batch)
+        if len(ordered_ids) == before:
             stagnant += 1
         else:
             stagnant = 0
 
-    ordered = sorted(by_id.values(), key=lambda m: m.get("index", 0))
+    ordered = [by_id[mid] for mid in ordered_ids if mid in by_id]
     if len(ordered) > limit:
         ordered = ordered[-limit:]
     return name, ordered, info

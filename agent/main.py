@@ -260,7 +260,9 @@ class WeJamServicer(wejam_pb2_grpc.WeJamServicer):
                         text=m["text"], time_text=m["time_text"],
                         kind=getattr(wejam_pb2, f"MESSAGE_KIND_{m['kind']}"),
                         index=m["index"],
-                        from_self=selflog.is_own(m["chat"], m["text"])) for m in added],
+                        from_self=selflog.is_own(m["chat"], m["text"]),
+                        content_type=m.get("content_type", "text"),
+                    ) for m in added],
                 )
             time.sleep(1.5)
 

@@ -47,3 +47,22 @@ def test_save_png_writes_under_media_dir(tmp_path: Path, monkeypatch) -> None:
     assert Path(path).parent == tmp_path
     assert digest == capture._sha256_bytes(img.convert("RGB").tobytes())
     assert digest[:16] in Path(path).name
+
+
+def test_merge_older_batch_prepends_without_using_index() -> None:
+    """Upward scroll reveals older ids; they go in front, not by window index."""
+    by_id = {
+        "mid": {"id": "mid", "index": 0, "text": "m"},
+        "new": {"id": "new", "index": 1, "text": "n"},
+    }
+    ordered = ["mid", "new"]
+    batch = [
+        {"id": "old1", "index": 0, "text": "o1"},
+        {"id": "old2", "index": 1, "text": "o2"},
+        {"id": "mid", "index": 2, "text": "m2"},
+        {"id": "new", "index": 3, "text": "n2"},
+    ]
+    merged = capture.merge_older_batch(ordered, by_id, batch)
+    assert merged == ["old1", "old2", "mid", "new"]
+    assert by_id["mid"]["text"] == "m2"
+    assert capture.merge_older_batch(merged, by_id, batch) == merged
