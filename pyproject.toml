@@ -1,0 +1,17 @@
+[project]
+name = "callus-bridge"
+version = "0.1.0"
+description = "WeChat data-capture bridge (wejam.v1 wire-compatible)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "grpcio",
+  "protobuf",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pillow", "grpcio-tools"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
