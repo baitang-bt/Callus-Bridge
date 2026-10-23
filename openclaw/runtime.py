@@ -250,6 +250,47 @@ class OpenClawRuntime:
             self._set_phase(PHASE_WAIT_PHONE, "scanned, confirm on phone", ["openclaw"])
         time.sleep(self.poll_qr_seconds)
 
+    def apply_updates(self, data: dict[str, Any]) -> int:
+        """Ingest one getupdates JSON body; return how many msgs were queued.
+
+        Used by the poller and by unit tests. Persists sync cursor and any
+        context_token values needed for later SendText.
+        """
+        if not api_ok(data):
+            err = data.get("errcode", data.get("ret"))
+            _log.warning("getupdates errcode=%s", err)
+            if err in (-14, "-14"):
+                self.logout_local("session timeout")
+            return 0
+        new_buf = data.get("get_updates_buf")
+        msgs = data.get("msgs") if isinstance(data.get("msgs"), list) else []
+        aliases = self._aliases()
+        ingested = 0
+        with self._lock:
+            if new_buf:
+                self._sync_buf = str(new_buf)
+            for raw in msgs:
+                if not isinstance(raw, dict):
+                    continue
+                mapped = inbound_to_message(
+                    raw,
+                    aliases=aliases,
+                    account_id=self._account_id,
+                )
+                if mapped is None:
+                    continue
+                uid = mapped["user_id"]
+                ctx = mapped.get("context_token") or ""
+                if ctx:
+                    self._context_tokens[uid] = ctx
+                self._remember_chat(mapped)
+                self._recent.setdefault(uid, []).append(mapped)
+                self._recent[uid] = self._recent[uid][-50:]
+                self._inbox.append(mapped)
+                ingested += 1
+            self._persist()
+        return ingested
+
     def _updates_loop(self) -> None:
         """Long-poll getupdates while logged in."""
         while not self._stop.is_set():
@@ -262,37 +303,10 @@ class OpenClawRuntime:
                     continue
                 data = self._client().get_updates(sync_buf)
                 if not api_ok(data):
-                    err = data.get("errcode", data.get("ret"))
-                    _log.warning("getupdates errcode=%s", err)
-                    if err in (-14, "-14"):
-                        self.logout_local("session timeout")
+                    self.apply_updates(data)
                     time.sleep(5.0)
                     continue
-                new_buf = data.get("get_updates_buf")
-                msgs = data.get("msgs") if isinstance(data.get("msgs"), list) else []
-                aliases = self._aliases()
-                with self._lock:
-                    if new_buf:
-                        self._sync_buf = str(new_buf)
-                    for raw in msgs:
-                        if not isinstance(raw, dict):
-                            continue
-                        mapped = inbound_to_message(
-                            raw,
-                            aliases=aliases,
-                            account_id=self._account_id,
-                        )
-                        if mapped is None:
-                            continue
-                        uid = mapped["user_id"]
-                        ctx = mapped.get("context_token") or ""
-                        if ctx:
-                            self._context_tokens[uid] = ctx
-                        self._remember_chat(mapped)
-                        self._recent.setdefault(uid, []).append(mapped)
-                        self._recent[uid] = self._recent[uid][-50:]
-                        self._inbox.append(mapped)
-                    self._persist()
+                self.apply_updates(data)
             except Exception:
                 _log.exception("openclaw updates loop error")
                 time.sleep(5.0)
@@ -380,7 +394,10 @@ class OpenClawRuntime:
         if not uid:
             return False, "empty chat"
         if not ctx:
-            return False, "no context_token for chat; wait for an inbound message first"
+            return (
+                False,
+                "该会话尚无 context_token；请等对方先发一条消息后再回",
+            )
         try:
             data = self._client().send_text(
                 to_user_id=uid,

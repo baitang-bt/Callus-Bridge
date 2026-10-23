@@ -68,9 +68,10 @@ openclaw 不以「微信备注名」为稳定主键，默认 **`chat = from_user
 
 | RPC | 行为 |
 |-----|------|
-| `ReadContext` / `ReadLatest` / `CaptureMessageMedia` | `UNIMPLEMENTED` 或空结果 + 明确 detail |
-| `DumpA11yTree` / `InvokeNode` / `GetBadges` / `InvokeMessage` | `UNIMPLEMENTED` |
-| GUI `Logout` | 清除本地 token 并回到待扫码（不点微信设置） |
+| `ReadContext` / `GetBadges` / `DumpA11yTree` / `InvokeMessage` | `UNIMPLEMENTED`（明确 abort，不假成功） |
+| `CaptureMessageMedia` / `InvokeNode` | `ok=false` + 明确 detail |
+| `ReadLatest` | 仅返回本进程缓存的最近一条（无滚动历史）；无缓存则空 Message |
+| `Logout` | 清除本地 token 并回到待扫码（不点微信设置） |
 
 ## 状态落盘
 
