@@ -10,7 +10,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pillow", "grpcio-tools"]
+dev = ["pytest", "pillow", "grpcio-tools", "httpx"]
+openclaw = ["httpx", "grpcio", "protobuf"]
+
+[project.scripts]
+callus-openclaw = "openclaw.__main__:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
