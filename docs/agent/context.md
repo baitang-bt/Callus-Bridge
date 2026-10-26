@@ -4,8 +4,10 @@
 
 ## 当前焦点
 
-- 独立仓库演进；不改 WeJamBot 的 `agent/`
-- 增量 RPC：`ReadLatest` / `ReadContext` / `CaptureMessageMedia`
+- **OpenClaw 非 GUI 桥**（`feat/openclaw-non-gui`，`:7702`）— 接手说明见 [`handoff-openclaw.md`](./handoff-openclaw.md)
+- **多媒体入站**：CDN 解密图片 / 语音读 `voice_item.text` / 合并与表情启发式；探针 `make openclaw-probe-media`；说明 [`../openclaw-media-samples.md`](../openclaw-media-samples.md)
+- GUI `agent/`（`:7701`）保留为遗留；宿主默认走 openclaw
+- 独立仓库演进；不把 openclaw 默认实现搬进 WeJamBot `bot/`
 
 ## 架构与决策
 
@@ -20,5 +22,7 @@
 | 用途 | 路径 |
 |------|------|
 | 契约 | `proto/wejam/v1/wejam.proto` |
-| 容器内实现 | `agent/`（含 `capture.py`） |
-| 宿主客户端 | `wejam/client.py`、`callus/adapter.py` |
+| OpenClaw 桥 | `openclaw/`；`docs/openclaw.md` |
+| OpenClaw 接手 | `docs/agent/handoff-openclaw.md` |
+| GUI 遗留 | `agent/`（含 `capture.py`），端口 7701 |
+| 宿主客户端 | WeJamBot 侧 `wejam` / CallusClient；本仓 `wejam/client.py`、`callus/adapter.py` |

@@ -6,6 +6,8 @@ __pycache__/
 .ruff_cache/
 data/media/*
 !data/media/.gitkeep
+data/openclaw/*
+!data/openclaw/.gitkeep
 *.png
 *.jpg
 .env
