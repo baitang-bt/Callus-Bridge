@@ -19,10 +19,13 @@ sys.path.insert(0, os.path.normpath(os.path.join(_HERE, "..")))
 
 from wejam.v1 import wejam_pb2, wejam_pb2_grpc  # noqa: E402
 
-from . import accessibility, badges, capture, chat, geometry, login, message_actions, selflog, session_account, wechat_info  # noqa: E402
+from . import accessibility, badges, capture, chat, enrich, geometry, login, message_actions, selflog, session_account, wechat_info  # noqa: E402
 from . import input as inputmod  # noqa: E402
+from .redact import install_agent_log_filter  # noqa: E402
 
 PORT = int(os.environ.get("WEJAM_PORT", "7700"))
+# When "1", WatchMessages (single-chat) may probe voice→text / crop emotion|image.
+_AUTO_ENRICH = os.environ.get("CALLUS_AUTO_ENRICH", "1") != "0"
 PHASE_TO_PROTO = {
     login.PHASE_UNSPECIFIED: wejam_pb2.LOGIN_PHASE_UNSPECIFIED,
     login.PHASE_STARTING: wejam_pb2.LOGIN_PHASE_STARTING,
@@ -252,17 +255,12 @@ class WeJamServicer(wejam_pb2_grpc.WeJamServicer):
                      if m["kind"] == "TEXT" and (m["chat"], m["id"]) not in seen]
             if added:
                 seen.update((m["chat"], m["id"]) for m in added)
+                if _AUTO_ENRICH:
+                    added = [enrich.enrich_inbound_message(m) for m in added]
                 yield wejam_pb2.MessageEvent(
                     chat=target,
                     at_unix_ms=int(time.time() * 1000),
-                    added=[wejam_pb2.Message(
-                        id=m["id"], chat=m["chat"], sender=m["sender"],
-                        text=m["text"], time_text=m["time_text"],
-                        kind=getattr(wejam_pb2, f"MESSAGE_KIND_{m['kind']}"),
-                        index=m["index"],
-                        from_self=selflog.is_own(m["chat"], m["text"]),
-                        content_type=m.get("content_type", "text"),
-                    ) for m in added],
+                    added=[self._message_proto(m) for m in added],
                 )
             time.sleep(1.5)
 
@@ -389,6 +387,7 @@ class WeJamServicer(wejam_pb2_grpc.WeJamServicer):
 
 
 def serve():
+    install_agent_log_filter()
     machine = login.LoginMachine(
         poll_interval=float(os.environ.get("WEJAM_POLL", "1.0")),
         auto_login=os.environ.get("WEJAM_AUTO_LOGIN", "1") != "0",

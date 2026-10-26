@@ -37,16 +37,39 @@ def test_sha256_bytes_stable() -> None:
 
 def test_save_png_writes_under_media_dir(tmp_path: Path, monkeypatch) -> None:
     """PNG crops land under CALLUS_MEDIA_DIR with a content hash in the name."""
+    import io
+
     from PIL import Image
 
     monkeypatch.setenv("CALLUS_MEDIA_DIR", str(tmp_path))
     capture.MEDIA_DIR = tmp_path
     img = Image.new("RGB", (8, 8), color=(10, 20, 30))
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, format="PNG")
+    expected = hashlib.sha256(buf.getvalue()).hexdigest()
     path, digest = capture._save_png(img, "unit")
     assert Path(path).is_file()
     assert Path(path).parent == tmp_path
-    assert digest == capture._sha256_bytes(img.convert("RGB").tobytes())
+    assert digest == expected
     assert digest[:16] in Path(path).name
+    assert not Path(path + ".part").exists()
+
+
+def test_save_png_rejects_oversize(tmp_path: Path, monkeypatch) -> None:
+    """Oversized PNG payloads fail before rename; no leftover .part."""
+    from PIL import Image
+
+    monkeypatch.setenv("CALLUS_MEDIA_DIR", str(tmp_path))
+    capture.MEDIA_DIR = tmp_path
+    monkeypatch.setattr(capture, "MAX_CAPTURE_BYTES", 64)
+    img = Image.new("RGB", (64, 64), color=(1, 2, 3))
+    try:
+        capture._save_png(img, "big")
+        raise AssertionError("expected size error")
+    except RuntimeError as exc:
+        assert "exceeds" in str(exc)
+    assert list(tmp_path.glob("*.part")) == []
+    assert list(tmp_path.glob("*.png")) == []
 
 
 def test_merge_older_batch_prepends_without_using_index() -> None:
