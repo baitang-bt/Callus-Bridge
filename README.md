@@ -6,6 +6,15 @@
 
 本仓从 WeJam 的 bridge 侧 **拷贝** 后演进，不修改 WeJamBot 仓内的 `agent/`。
 
+## 主路径 vs 旁路
+
+| 路径 | 端口 | 适用 |
+|------|------|------|
+| **GUI Callus（主）** | `:7701` | 真个人号；**可拉进个人微信群**；AT-SPI + Xvfb |
+| openclaw 非 GUI（旁路） | `:7702` | ilink 扫码长轮询；**仅私聊**，不能进个人群 |
+
+群聊 / 个人号进群 → 用 GUI `:7701`。openclaw 适合可选私聊旁路，不是群聊 SoT。
+
 ## 能力
 
 | 能力 | 说明 |
@@ -14,12 +23,13 @@
 | `ReadLatest` | 最新一条 + 发送者昵称，不等滚动 |
 | `ReadContext(chat, limit)` | 向上滚动凑上下文；`limit` 由调用方传入 |
 | `CaptureMessageMedia` | 气泡裁图；动画抽帧，不变则静帧 `sampled=false` |
+| 入站增强（可选） | 单聊 `WatchMessages` 可对 `voice`/`image`/`emotion` 探测转文字或自动裁图（`CALLUS_AUTO_ENRICH=0` 关闭） |
 
 ## 快速开始
 
 ```bash
 make build
-make up          # 127.0.0.1:7701
+make up          # 127.0.0.1:7701（GUI 主路径）
 WEJAM_TARGET=127.0.0.1:7701 python -m wejam.cli status
 ```
 

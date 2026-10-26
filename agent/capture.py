@@ -17,6 +17,7 @@ from .ui import synchronized
 MEDIA_DIR = Path(os.environ.get("CALLUS_MEDIA_DIR", "/data/media"))
 DEFAULT_MAX_FRAMES = 8
 DEFAULT_INTERVAL_MS = 200
+MAX_CAPTURE_BYTES = 20 * 1024 * 1024
 
 
 def _media_root() -> Path:
@@ -31,13 +32,31 @@ def _sha256_bytes(data: bytes) -> str:
 
 
 def _save_png(image, stem: str) -> tuple[str, str]:
-    """Write a PNG under MEDIA_DIR; return (path, sha256)."""
+    """Write a PNG via ``.part`` then rename; enforce size cap; return (path, sha256)."""
+    import io
+
     raw = image.convert("RGB")
-    buf = raw.tobytes()
-    digest = _sha256_bytes(buf)
-    path = _media_root() / f"{stem}_{digest[:16]}.png"
-    raw.save(path, format="PNG")
-    return str(path), digest
+    buf = io.BytesIO()
+    raw.save(buf, format="PNG")
+    data = buf.getvalue()
+    if len(data) > MAX_CAPTURE_BYTES:
+        raise RuntimeError(f"capture exceeds {MAX_CAPTURE_BYTES} bytes")
+    digest = _sha256_bytes(data)
+    final = _media_root() / f"{stem}_{digest[:16]}.png"
+    part = final.with_suffix(final.suffix + ".part")
+    try:
+        part.write_bytes(data)
+        written = part.read_bytes()
+        if len(written) != len(data) or _sha256_bytes(written) != digest:
+            raise RuntimeError("part file failed size/hash verification")
+        part.replace(final)
+    except Exception:
+        try:
+            part.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return str(final), digest
 
 
 @synchronized

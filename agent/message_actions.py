@@ -21,12 +21,15 @@ from . import geometry, screen
 from . import input as inputmod
 from .ui import synchronized
 
-# 菜单项的稳定名字（微信 4.1.13 实测）
+# 菜单项的稳定名字（微信 4.1.13 实测；转文字因版本而异，调用前探测）
 ACTIONS = ("复制", "放大阅读", "翻译", "搜一搜", "转发...", "收藏",
-           "多选", "提醒", "引用", "删除")
+           "多选", "提醒", "引用", "删除", "转文字", "语音转文字")
 
 # 危险动作：默认拒绝，避免自动化误删用户消息
 DANGEROUS_ACTIONS = ("删除", "撤回")
+
+# Preferred labels for voice → text (first match wins).
+VOICE_TO_TEXT_ACTIONS = ("转文字", "语音转文字", "转换成文字")
 
 
 def _background_of_row(img, X, Y, W):
@@ -105,24 +108,35 @@ def bubble_rect(chat, index):
     return (X + a, Y, b - a + 1, H)        # 返回 root 坐标，供点击使用
 
 
+def _open_context_menu(chat, index):
+    """Right-click the bubble; return (ok, detail, rect) without choosing a menu item."""
+    from . import chat as chatmod
+
+    if chatmod._popup_guard():
+        return False, chatmod._popup_guard(), None
+    rect = bubble_rect(chat, index)
+    if rect is None:
+        return False, "找不到该消息的气泡", None
+    x, y, w, h = rect
+    inputmod.click_at(x + w // 2, y + h // 2, button=3)
+    time.sleep(1.4)
+    return True, "", rect
+
+
+def menu_item_present(label: str) -> bool:
+    """True when an open context menu exposes a menu item with *label*."""
+    return geometry.node_physical_rect("menu item", label) is not None
+
+
 @synchronized
 def invoke(chat, index, action):
     """对第 index 条消息执行右键菜单动作。返回 (ok, detail, text)。"""
     if action in DANGEROUS_ACTIONS:
         return False, f"拒绝执行危险动作 {action!r}", ""
 
-    from . import chat as chatmod
-
-    if chatmod._popup_guard():
-        return False, chatmod._popup_guard(), ""
-
-    rect = bubble_rect(chat, index)
-    if rect is None:
-        return False, "找不到该消息的气泡", ""
-    x, y, w, h = rect
-
-    inputmod.click_at(x + w // 2, y + h // 2, button=3)
-    time.sleep(1.4)
+    ok, detail, _rect = _open_context_menu(chat, index)
+    if not ok:
+        return False, detail, ""
 
     # 菜单是独立窗口；用无障碍按名字找菜单项
     item = geometry.node_physical_rect("menu item", action)
@@ -133,11 +147,57 @@ def invoke(chat, index, action):
     time.sleep(0.8)
 
     text = ""
-    if action == "复制":
+    if action == "复制" or action in VOICE_TO_TEXT_ACTIONS:
+        # 转文字后微信常把结果写进气泡旁或剪贴板；优先读剪贴板，失败则空串。
         try:
-            out = subprocess.run(["xclip", "-selection", "clipboard", "-o"],
-                                 capture_output=True, text=True, timeout=10)
-            text = out.stdout
+            out = subprocess.run(
+                ["xclip", "-selection", "clipboard", "-o"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            text = (out.stdout or "").strip()
         except Exception as e:
-            return False, f"已点复制但读剪贴板失败: {e}", ""
+            if action == "复制":
+                return False, f"已点复制但读剪贴板失败: {e}", ""
+            text = ""
     return True, f"已对第 {index} 条消息执行 {action}", text
+
+
+@synchronized
+def voice_to_text(chat, index):
+    """Probe voice-to-text menu labels; return (ok, detail, transcript).
+
+    Opens the context menu once, picks the first matching label, dismisses on miss.
+    """
+    ok, detail, _rect = _open_context_menu(chat, index)
+    if not ok:
+        return False, detail, ""
+    chosen = None
+    for label in VOICE_TO_TEXT_ACTIONS:
+        if menu_item_present(label):
+            chosen = label
+            break
+    if chosen is None:
+        inputmod.tap_key("Escape")
+        return False, "菜单里没有转文字（可能消息类型不支持或微信版本无此项）", ""
+    item = geometry.node_physical_rect("menu item", chosen)
+    if item is None:
+        inputmod.tap_key("Escape")
+        return False, f"菜单项 {chosen!r} 瞬时消失", ""
+    inputmod.click_at(item[0] + item[2] // 2, item[1] + item[3] // 2)
+    time.sleep(1.2)
+    text = ""
+    try:
+        out = subprocess.run(
+            ["xclip", "-selection", "clipboard", "-o"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        text = (out.stdout or "").strip()
+    except Exception:
+        text = ""
+    if not text:
+        return True, f"已点 {chosen} 但未读到转写文本", ""
+    return True, f"已对第 {index} 条消息执行 {chosen}", text
