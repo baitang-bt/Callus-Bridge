@@ -21,7 +21,13 @@ class OpenClawStore:
         self.root.mkdir(parents=True, exist_ok=True)
         self._state_path = self.root / "state.json"
         self._alias_path = self.root / "aliases.json"
+        self._media_root = self.root / "media"
         self._lock = threading.Lock()
+
+    def media_dir(self) -> Path:
+        """Directory for decrypted inbound CDN blobs (gitignored under data/openclaw)."""
+        self._media_root.mkdir(parents=True, exist_ok=True)
+        return self._media_root
 
     def load_state(self) -> dict[str, Any]:
         """Read state.json; missing file yields empty defaults."""

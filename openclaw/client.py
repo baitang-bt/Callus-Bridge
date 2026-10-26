@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import base64
+import logging
 import random
 from typing import Any
 
 import httpx
 
 from openclaw import CHANNEL_VERSION, DEFAULT_BASE_URL
+from openclaw.redact import install_openclaw_log_filter, redact_body, redact_token
 
+_log = logging.getLogger(__name__)
+install_openclaw_log_filter()
 
 class OpenClawClient:
     """Call ilink bot APIs with optional bearer token."""
@@ -57,12 +61,19 @@ class OpenClawClient:
         timeout_seconds: float | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        """POST/GET JSON; raise RuntimeError on HTTP >= 400."""
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        """POST/GET JSON; raise RuntimeError on HTTP >= 400 without leaking bodies."""
+        path = endpoint.lstrip("/")
+        url = f"{self.base_url}/{path}"
         headers = self._headers(token_required=token_required)
         if extra_headers:
             headers.update(extra_headers)
         timeout = timeout_seconds if timeout_seconds is not None else self.timeout_seconds
+        _log.debug(
+            "ilink %s %s token=%s",
+            method,
+            path,
+            redact_token(self.token if token_required else None),
+        )
         with httpx.Client(timeout=timeout) as client:
             response = client.request(
                 method,
@@ -72,14 +83,17 @@ class OpenClawClient:
                 headers=headers,
             )
         if response.status_code >= 400:
-            raise RuntimeError(
-                f"{method} {endpoint} failed: {response.status_code} {response.text[:300]}"
-            )
+            # Never attach getupdates/sendmessage response bodies (tokens, media refs).
+            if "getupdates" in path or "sendmessage" in path:
+                detail = f"http_{response.status_code}"
+            else:
+                detail = redact_body(response.text[:500] if response.text else "")
+            raise RuntimeError(f"{method} {path} failed: {detail}")
         if not response.text:
             return {}
         data = response.json()
         if not isinstance(data, dict):
-            raise RuntimeError(f"{method} {endpoint}: response is not a JSON object")
+            raise RuntimeError(f"{method} {path}: response is not a JSON object")
         return data
 
     def get_bot_qrcode(self, bot_type: str = "3") -> dict[str, Any]:

@@ -34,12 +34,17 @@ Base URL 默认 `https://ilinkai.weixin.qq.com`。
 | `from_user_id` | `chat`（默认；见 aliases） | `chat` |
 | `from_user_id`（单聊） | `sender` 空或同 chat | `sender` |
 | `item_list[].text_item.text`（type=1） | `text` | `text` |
-| 非文本 item | `text` 占位如 `[图片]`，`content_type` 对应 | 同左 |
+| `image_item`（type=2） | CDN 解密落盘 → `attachments`；`content_type=image`（GIF/WebP→`emotion`） | 同左 / `image_paths` |
+| `voice_item.text`（type=3） | 云端转写进 `text`；无则 `[语音]`；`content_type=voice` | 同左 |
+| `file_item` 聊天记录名（type=4） | 尝试解正文；失败则明确占位；`content_type=merge` | 同左 |
+| 其它非文本 | 占位 + `content_type` | 同左 |
 | `message_id` / `msg_id` | `id` | `message_id` |
 | `create_time` / `create_time_ms` | `time_text`（可读） | — |
 | 本 bot 发出 | `from_self=true` | `from_self` |
 | （完整正文） | `preview_only=false` | `preview=false` |
 | `context_token` | 不进 Message；写入该 chat 的发送凭证 | — |
+
+媒体细节与探针：见 [`docs/openclaw-media-samples.md`](./openclaw-media-samples.md)。解密文件在 `data/openclaw/media/`（gitignore）。
 
 ## 会话列表与白名单
 

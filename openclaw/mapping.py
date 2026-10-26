@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import time
-from typing import Any
-
+from pathlib import Path
+from typing import Any, Callable
 
 ITEM_TYPE_TEXT = 1
 ITEM_TYPE_IMAGE = 2
@@ -38,7 +38,10 @@ def resolve_user_id(chat: str, aliases: dict[str, str]) -> str:
 
 
 def text_from_item_list(item_list: list[Any]) -> tuple[str, str]:
-    """Extract (text, content_type) from an openclaw item_list."""
+    """Extract (text, content_type) without downloading CDN media.
+
+    Voice prefers WeChat cloud transcript in voice_item.text when present.
+    """
     texts: list[str] = []
     content_type = "text"
     for raw in item_list or []:
@@ -51,13 +54,27 @@ def text_from_item_list(item_list: list[Any]) -> tuple[str, str]:
             if piece:
                 texts.append(piece)
             continue
+        if item_type == ITEM_TYPE_VOICE:
+            voice = raw.get("voice_item") if isinstance(raw.get("voice_item"), dict) else {}
+            transcript = str(voice.get("text") or "").strip()
+            content_type = "voice"
+            texts.append(transcript or "[语音]")
+            continue
         kind, placeholder = _CONTENT_BY_TYPE.get(item_type, ("text", "[消息]"))
         content_type = kind
+        if item_type == ITEM_TYPE_FILE:
+            file_item = raw.get("file_item") if isinstance(raw.get("file_item"), dict) else {}
+            name = str(file_item.get("file_name") or "").strip()
+            texts.append(f"[文件] {name}" if name else placeholder)
+            lower_name = name.lower()
+            if any(tok in lower_name for tok in ("聊天记录", "合并转发", "chat", "record")):
+                content_type = "merge"
+                texts[-1] = f"[合并转发] {name}" if name else "[合并转发]"
+            continue
         texts.append(placeholder)
     body = "\n".join(texts).strip()
     if not body:
         body = "[消息]"
-        content_type = content_type if content_type != "text" else "text"
     return body, content_type
 
 
@@ -66,13 +83,34 @@ def inbound_to_message(
     *,
     aliases: dict[str, str],
     account_id: str = "",
+    media_root: Path | None = None,
+    cdn_base: str | None = None,
+    download: Callable[..., bytes] | None = None,
 ) -> dict[str, Any] | None:
-    """Convert one getupdates msgs[] entry to an internal message dict."""
+    """Convert one getupdates msgs[] entry to an internal message dict.
+
+    When ``media_root`` is set, images/files are downloaded into that directory
+    and returned as ``attachments``.
+    """
     from_user_id = str(msg.get("from_user_id") or "").strip()
     if not from_user_id:
         return None
     item_list = msg.get("item_list") if isinstance(msg.get("item_list"), list) else []
-    text, content_type = text_from_item_list(item_list)
+    attachments: list[dict[str, Any]] = []
+    if media_root is not None:
+        from openclaw.cdn import DEFAULT_CDN_BASE
+        from openclaw.media_ingest import ingest_item_list
+
+        mid = str(msg.get("message_id") or msg.get("msg_id") or "msg")
+        text, content_type, attachments = ingest_item_list(
+            item_list,
+            media_root=media_root,
+            cdn_base=cdn_base or DEFAULT_CDN_BASE,
+            download=download,
+            msg_stem=f"{from_user_id[:12]}_{mid}"[:48],
+        )
+    else:
+        text, content_type = text_from_item_list(item_list)
     message_id = str(msg.get("message_id") or msg.get("msg_id") or "").strip()
     if not message_id:
         message_id = hashlib.sha1(
@@ -103,6 +141,7 @@ def inbound_to_message(
         "content_type": content_type,
         "context_token": context_token,
         "stable_id": from_user_id,
+        "attachments": attachments,
     }
 
 

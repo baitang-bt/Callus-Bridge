@@ -8,7 +8,7 @@ NAME ?= callus-session
 IMAGE ?= callus/wechat:latest
 
 .DEFAULT_GOAL := help
-.PHONY: help proto proto-check build up down logs shell status test clean openclaw openclaw-status
+.PHONY: help proto proto-check build up down logs shell status test clean openclaw openclaw-status openclaw-probe-media
 
 help:  ## 显示所有可用任务
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -43,6 +43,9 @@ openclaw:  ## 启动非 GUI openclaw 桥（默认 :7702，无 Xvfb/微信）
 
 openclaw-status:  ## 查看 openclaw 桥状态（:7702）
 	WEJAM_TARGET=127.0.0.1:7702 $(PYTHON) -m wejam.cli status
+
+openclaw-probe-media:  ## 脱敏 dump 入站 item_list（需已登录；发图/语音后再跑）
+	$(PYTHON) scripts/probe_openclaw_media.py --wait 90
 
 test:  ## 离线单测
 	$(PYTHON) -m pytest tests/ -q

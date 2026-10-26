@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -225,3 +226,81 @@ def test_gui_rpcs_refuse_on_openclaw_servicer() -> None:
     cap = svc.CaptureMessageMedia(MagicMock(), MagicMock())
     assert cap.ok is False
     assert "unsupported" in cap.detail
+
+
+@pytest.mark.parametrize("errcode", [-14, "-14"])
+def test_apply_updates_errcode_minus14_clears_session(
+    tmp_path: Path, errcode: int | str
+) -> None:
+    """errcode -14 clears memory and disk session and leaves logged-in phase."""
+    from openclaw.runtime import PHASE_STARTING
+
+    store = OpenClawStore(tmp_path)
+    store.save_state(
+        {
+            "token": "live-token",
+            "account_id": "bot",
+            "base_url": "https://ilink.test",
+            "sync_buf": "old-cursor",
+            "context_tokens": {"u1": "ctx"},
+            "chats": {"u1": {"name": "u1"}},
+        }
+    )
+    fake = MagicMock()
+    runtime = OpenClawRuntime(store, client_factory=lambda base, token: fake)
+    runtime._phase = PHASE_LOGGED_IN
+    runtime._token = "live-token"
+    runtime._sync_buf = "old-cursor"
+    runtime._context_tokens = {"u1": "ctx"}
+    runtime._account_id = "bot"
+
+    n = runtime.apply_updates({"errcode": errcode})
+    assert n == 0
+    assert runtime._token == ""
+    assert runtime._sync_buf == ""
+    assert runtime._context_tokens == {}
+    assert runtime.snapshot()["phase"] == PHASE_STARTING
+    assert runtime.snapshot()["phase"] != PHASE_LOGGED_IN
+
+    disk = store.load_state()
+    assert disk.get("token") == ""
+    assert disk.get("sync_buf") == ""
+    assert disk.get("context_tokens") == {}
+
+
+def test_updates_loop_skips_getupdates_without_token(tmp_path: Path) -> None:
+    """Polling must not call getupdates when token was cleared."""
+    import threading
+
+    store = OpenClawStore(tmp_path)
+    fake = MagicMock()
+    runtime = OpenClawRuntime(store, client_factory=lambda base, token: fake)
+    runtime._token = ""
+    runtime._sync_buf = "stale-buf"
+    runtime._stop.clear()
+
+    thread = threading.Thread(target=runtime._updates_loop, daemon=True)
+    thread.start()
+    time.sleep(0.35)
+    runtime.stop()
+    thread.join(timeout=2.0)
+    fake.get_updates.assert_not_called()
+
+
+def test_refresh_qr_reaches_qr_ready_with_fake_client(tmp_path: Path) -> None:
+    """After logout, QR refresh can enter qr_ready without network."""
+    from openclaw.runtime import PHASE_QR_READY, PHASE_STARTING
+
+    store = OpenClawStore(tmp_path)
+    fake = MagicMock()
+    fake.get_bot_qrcode.return_value = {
+        "qrcode": "handle-1",
+        "qrcode_img_content": "https://login.example/qr-payload",
+    }
+    runtime = OpenClawRuntime(store, client_factory=lambda base, token: fake)
+    runtime._token = ""
+    runtime._phase = PHASE_STARTING
+    runtime._refresh_qr()
+    assert runtime.snapshot()["phase"] == PHASE_QR_READY
+    assert runtime.qr()["payload"]
+    fake.get_bot_qrcode.assert_called()

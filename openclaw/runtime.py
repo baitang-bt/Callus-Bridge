@@ -17,9 +17,11 @@ from openclaw.mapping import (
     inbound_to_message,
     resolve_user_id,
 )
+from openclaw.redact import install_openclaw_log_filter, redact_token, safe_exc
 from openclaw.store import OpenClawStore
 
 _log = logging.getLogger(__name__)
+install_openclaw_log_filter()
 
 PHASE_STARTING = "starting"
 PHASE_QR_READY = "qr_ready"
@@ -187,8 +189,8 @@ class OpenClawRuntime:
                     self._poll_qr_once()
                 else:
                     time.sleep(self.poll_qr_seconds)
-            except Exception:
-                _log.exception("openclaw login loop error")
+            except Exception as exc:
+                _log.warning("openclaw login loop error err=%s", safe_exc(exc))
                 self._set_phase(PHASE_UNKNOWN, "login loop error", [])
                 time.sleep(3.0)
 
@@ -254,31 +256,41 @@ class OpenClawRuntime:
         """Ingest one getupdates JSON body; return how many msgs were queued.
 
         Used by the poller and by unit tests. Persists sync cursor and any
-        context_token values needed for later SendText.
+        context_token values needed for later SendText. CDN downloads run
+        outside the session lock so long polls stay responsive.
         """
         if not api_ok(data):
             err = data.get("errcode", data.get("ret"))
-            _log.warning("getupdates errcode=%s", err)
+            _log.warning(
+                "getupdates errcode=%s token=%s",
+                err,
+                redact_token(self._token),
+            )
             if err in (-14, "-14"):
                 self.logout_local("session timeout")
             return 0
         new_buf = data.get("get_updates_buf")
         msgs = data.get("msgs") if isinstance(data.get("msgs"), list) else []
         aliases = self._aliases()
-        ingested = 0
         with self._lock:
             if new_buf:
                 self._sync_buf = str(new_buf)
-            for raw in msgs:
-                if not isinstance(raw, dict):
-                    continue
-                mapped = inbound_to_message(
-                    raw,
-                    aliases=aliases,
-                    account_id=self._account_id,
-                )
-                if mapped is None:
-                    continue
+            account_id = self._account_id
+        media_root = self.store.media_dir()
+        mapped_rows: list[dict[str, Any]] = []
+        for raw in msgs:
+            if not isinstance(raw, dict):
+                continue
+            mapped = inbound_to_message(
+                raw,
+                aliases=aliases,
+                account_id=account_id,
+                media_root=media_root,
+            )
+            if mapped is not None:
+                mapped_rows.append(mapped)
+        with self._lock:
+            for mapped in mapped_rows:
                 uid = mapped["user_id"]
                 ctx = mapped.get("context_token") or ""
                 if ctx:
@@ -287,9 +299,8 @@ class OpenClawRuntime:
                 self._recent.setdefault(uid, []).append(mapped)
                 self._recent[uid] = self._recent[uid][-50:]
                 self._inbox.append(mapped)
-                ingested += 1
             self._persist()
-        return ingested
+        return len(mapped_rows)
 
     def _updates_loop(self) -> None:
         """Long-poll getupdates while logged in."""
@@ -307,8 +318,8 @@ class OpenClawRuntime:
                     time.sleep(5.0)
                     continue
                 self.apply_updates(data)
-            except Exception:
-                _log.exception("openclaw updates loop error")
+            except Exception as exc:
+                _log.warning("openclaw updates loop error err=%s", safe_exc(exc))
                 time.sleep(5.0)
 
     def _remember_chat(self, mapped: dict[str, Any]) -> None:

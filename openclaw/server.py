@@ -136,7 +136,20 @@ class OpenClawServicer(wejam_pb2_grpc.WeJamServicer):
         )
 
     def _message_proto(self, m: dict) -> wejam_pb2.Message:
-        """Map internal dict onto wire Message."""
+        """Map internal dict onto wire Message including local media attachments."""
+        media = []
+        for item in m.get("attachments") or ():
+            if not isinstance(item, dict):
+                continue
+            media.append(
+                wejam_pb2.MediaAttachment(
+                    kind=str(item.get("kind") or ""),
+                    path=str(item.get("path") or ""),
+                    sha256=str(item.get("sha256") or ""),
+                    sampled=bool(item.get("sampled")),
+                    frame_index=int(item.get("frame_index") or 0),
+                )
+            )
         return wejam_pb2.Message(
             id=m.get("id", ""),
             chat=m.get("chat", ""),
@@ -149,6 +162,7 @@ class OpenClawServicer(wejam_pb2_grpc.WeJamServicer):
             from_self=bool(m.get("from_self")),
             content_type=m.get("content_type") or "text",
             stable_id=m.get("stable_id") or "",
+            attachments=media,
         )
 
     def WatchMessages(self, request, context):

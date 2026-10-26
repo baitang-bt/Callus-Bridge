@@ -23,6 +23,15 @@ def test_text_from_item_list_image() -> None:
     assert kind == "image"
 
 
+def test_text_from_item_list_voice_transcript() -> None:
+    """Voice uses WeChat cloud transcript when voice_item.text is set."""
+    text, kind = text_from_item_list(
+        [{"type": 3, "voice_item": {"text": "转写内容"}}]
+    )
+    assert kind == "voice"
+    assert text == "转写内容"
+
+
 def test_aliases_roundtrip() -> None:
     """Display name and reverse resolve share the same map."""
     aliases = {"uid-1": "白糖"}

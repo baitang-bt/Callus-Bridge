@@ -11,7 +11,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "pillow", "grpcio-tools", "httpx"]
-openclaw = ["httpx", "grpcio", "protobuf"]
+openclaw = ["httpx", "grpcio", "protobuf", "cryptography"]
 
 [project.scripts]
 callus-openclaw = "openclaw.__main__:main"
