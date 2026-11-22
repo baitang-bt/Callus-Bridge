@@ -21,11 +21,26 @@ from wejam.v1 import wejam_pb2, wejam_pb2_grpc  # noqa: E402
 
 from . import accessibility, badges, capture, chat, enrich, geometry, login, message_actions, selflog, session_account, wechat_info  # noqa: E402
 from . import input as inputmod  # noqa: E402
-from .redact import install_agent_log_filter  # noqa: E402
+
+
+def _dict_to_message(m: dict, *, preview_only: bool = False) -> wejam_pb2.Message:
+    """Build a wire Message from a chat.list_messages / capture row dict."""
+    return wejam_pb2.Message(
+        id=m.get("id", ""),
+        chat=m.get("chat", ""),
+        sender=m.get("sender", ""),
+        text=m.get("text", ""),
+        time_text=m.get("time_text", ""),
+        kind=getattr(wejam_pb2, f"MESSAGE_KIND_{m.get('kind', 'TEXT')}"),
+        index=int(m.get("index", 0) or 0),
+        preview_only=preview_only,
+        from_self=selflog.is_own(m.get("chat", ""), m.get("text", "")),
+        content_type=m.get("content_type", "text"),
+        quote_text=m.get("quote_text", "") or "",
+        quote_sender=m.get("quote_sender", "") or "",
+    )
 
 PORT = int(os.environ.get("WEJAM_PORT", "7700"))
-# When "1", WatchMessages (single-chat) may probe voice→text / crop emotion|image.
-_AUTO_ENRICH = os.environ.get("CALLUS_AUTO_ENRICH", "1") != "0"
 PHASE_TO_PROTO = {
     login.PHASE_UNSPECIFIED: wejam_pb2.LOGIN_PHASE_UNSPECIFIED,
     login.PHASE_STARTING: wejam_pb2.LOGIN_PHASE_STARTING,
@@ -80,7 +95,16 @@ class WeJamServicer(wejam_pb2_grpc.WeJamServicer):
             self.machine.unsubscribe(q)
 
     def GetLoginQRCode(self, request, context):
-        qr = self.machine.qr()
+        """Return the login QR. Refresh metadata decodes the screen first."""
+        if _wants_fresh_qr(context):
+            qr = self.machine.read_screen_qr()
+            if qr is None:
+                context.abort(
+                    grpc.StatusCode.NOT_FOUND,
+                    "屏幕上没有解出二维码（微信可能不在扫码界面）",
+                )
+        else:
+            qr = self.machine.qr()
         if not qr["payload"]:
             context.abort(grpc.StatusCode.NOT_FOUND,
                           "当前没有可用的二维码（可能不在二维码状态）")
@@ -136,14 +160,7 @@ class WeJamServicer(wejam_pb2_grpc.WeJamServicer):
             chat=name,
             chat_type=info["chat_type"],
             member_count=info["member_count"],
-            messages=[wejam_pb2.Message(
-                id=m["id"], chat=m["chat"], sender=m["sender"], text=m["text"],
-                time_text=m["time_text"],
-                kind=getattr(wejam_pb2, f"MESSAGE_KIND_{m['kind']}"),
-                index=m["index"],
-                from_self=selflog.is_own(m["chat"], m["text"]),
-                content_type=m.get("content_type", "text"),
-            ) for m in msgs],
+            messages=[_dict_to_message(m) for m in msgs],
         )
 
     def WatchMessages(self, request, context):
@@ -177,21 +194,37 @@ class WeJamServicer(wejam_pb2_grpc.WeJamServicer):
     @staticmethod
     def _preview_to_message(c):
         """把会话列表的一行预览变成一条 Message（preview_only）。"""
-        text = c["last_message"]
-        sender = ""
-        # 群聊预览形如 "崔欣宇 7.31: 正文"，尝试拆出发送者
-        if ": " in text:
-            head, rest = text.split(": ", 1)
-            if 0 < len(head) <= 24 and rest.strip():
-                sender, text = head.strip(), rest.strip()
+        from .sender_name import split_preview_sender
+
+        # 群聊预览形如 "崔欣宇: 正文" / "昵称：正文"；拆出发送者（拒绝 [链接] 等）
+        sender, text = split_preview_sender(c["last_message"])
         mid = hashlib.sha1(
             f"{c['name']}|{c['last_message']}|{c['last_time']}|{c['unread_count']}".encode()
         ).hexdigest()[:16]
+        from .quote_parse import parse_quote_message
+
+        quote_text = ""
+        quote_sender = ""
+        content_type = "text"
+        parts = parse_quote_message(c["last_message"]) or parse_quote_message(text)
+        if parts is not None:
+            content_type = "quote"
+            quote_text = parts.quote_text
+            quote_sender = parts.quote_sender
+            if parts.body.strip():
+                text = parts.body.strip()
         return wejam_pb2.Message(
-            id=mid, chat=c["name"], sender=sender, text=text,
-            time_text=c["last_time"], kind=wejam_pb2.MESSAGE_KIND_TEXT,
+            id=mid,
+            chat=c["name"],
+            sender=sender,
+            text=text,
+            time_text=c["last_time"],
+            kind=wejam_pb2.MESSAGE_KIND_TEXT,
             preview_only=True,
             from_self=selflog.is_own(c["name"], c["last_message"]),
+            content_type=content_type,
+            quote_text=quote_text,
+            quote_sender=quote_sender,
         )
 
     def _watch_global(self, context):
@@ -255,12 +288,10 @@ class WeJamServicer(wejam_pb2_grpc.WeJamServicer):
                      if m["kind"] == "TEXT" and (m["chat"], m["id"]) not in seen]
             if added:
                 seen.update((m["chat"], m["id"]) for m in added)
-                if _AUTO_ENRICH:
-                    added = [enrich.enrich_inbound_message(m) for m in added]
                 yield wejam_pb2.MessageEvent(
                     chat=target,
                     at_unix_ms=int(time.time() * 1000),
-                    added=[self._message_proto(m) for m in added],
+                    added=[_dict_to_message(m) for m in added],
                 )
             time.sleep(1.5)
 
@@ -272,79 +303,61 @@ class WeJamServicer(wejam_pb2_grpc.WeJamServicer):
         ok, detail, text = message_actions.invoke(request.chat, request.index, request.action)
         return wejam_pb2.InvokeMessageResult(ok=ok, detail=detail, text=text)
 
-    def _message_proto(self, m, attachments=None):
-        """Map one agent message dict onto the wire Message (attachments optional)."""
-        media = []
-        for item in attachments or m.get("attachments") or ():
-            media.append(wejam_pb2.MediaAttachment(
-                kind=item.get("kind", ""),
-                path=item.get("path", ""),
-                sha256=item.get("sha256", ""),
-                sampled=bool(item.get("sampled", False)),
-                frame_index=int(item.get("frame_index", 0) or 0),
-            ))
-        return wejam_pb2.Message(
-            id=m["id"],
-            chat=m["chat"],
-            sender=m["sender"],
-            text=m["text"],
-            time_text=m.get("time_text", ""),
-            kind=getattr(wejam_pb2, f"MESSAGE_KIND_{m['kind']}"),
-            index=m["index"],
-            from_self=selflog.is_own(m["chat"], m["text"]),
-            content_type=m.get("content_type", "text"),
-            attachments=media,
-            stable_id=m.get("stable_id", "") or "",
+    def ReadLatest(self, request, context):
+        """Newest bubble in the opened chat (fills sender / quote / voice STT)."""
+        try:
+            name, latest, info = capture.read_latest(request.chat)
+        except RuntimeError as exc:
+            context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(exc))
+        if latest is None:
+            return wejam_pb2.ReadLatestResponse(
+                chat=name,
+                chat_type=info.get("chat_type", ""),
+                member_count=int(info.get("member_count") or 0),
+            )
+        # Voice only: right-click 转文字 on ReadLatest (not Watch) so host gets text.
+        if (latest.get("content_type") or "").strip().lower() == "voice":
+            latest = enrich.enrich_voice_transcript(latest)
+        return wejam_pb2.ReadLatestResponse(
+            chat=name,
+            message=_dict_to_message(latest),
+            chat_type=info.get("chat_type", ""),
+            member_count=int(info.get("member_count") or 0),
         )
 
     def ReadContext(self, request, context):
-        """Scroll-collect up to request.limit messages; limit is caller-owned."""
+        """Scroll-collect up to ``limit`` messages for reply history / quote fallback."""
         try:
             name, msgs, info = capture.read_context(request.chat, request.limit)
-        except RuntimeError as e:
-            context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(e))
+        except RuntimeError as exc:
+            context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(exc))
         return wejam_pb2.ReadContextResponse(
             chat=name,
+            messages=[_dict_to_message(m) for m in msgs],
             chat_type=info.get("chat_type", ""),
-            member_count=int(info.get("member_count", 0) or 0),
-            messages=[self._message_proto(m) for m in msgs],
-        )
-
-    def ReadLatest(self, request, context):
-        """Return the newest bubble (sender included) without waiting on scroll."""
-        try:
-            name, latest, info = capture.read_latest(request.chat)
-        except RuntimeError as e:
-            context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(e))
-        msg = self._message_proto(latest) if latest else wejam_pb2.Message()
-        return wejam_pb2.ReadLatestResponse(
-            chat=name,
-            message=msg,
-            chat_type=info.get("chat_type", ""),
-            member_count=int(info.get("member_count", 0) or 0),
+            member_count=int(info.get("member_count") or 0),
         )
 
     def CaptureMessageMedia(self, request, context):
-        """Crop sticker/image frames for one message index."""
-        ok, detail, items = capture.capture_message_media(
+        """Crop sticker/image frames for one bubble index."""
+        ok, detail, rows = capture.capture_message_media(
             request.chat,
             request.index,
             max_frames=request.max_frames,
             interval_ms=request.interval_ms,
         )
+        attachments = [
+            wejam_pb2.MediaAttachment(
+                kind=row.get("kind", ""),
+                path=row.get("path", ""),
+                sha256=row.get("sha256", ""),
+                sampled=bool(row.get("sampled")),
+                frame_index=int(row.get("frame_index") or 0),
+            )
+            for row in rows
+        ]
         return wejam_pb2.CaptureMessageMediaResponse(
-            ok=ok,
-            detail=detail,
-            attachments=[
-                wejam_pb2.MediaAttachment(
-                    kind=i.get("kind", ""),
-                    path=i.get("path", ""),
-                    sha256=i.get("sha256", ""),
-                    sampled=bool(i.get("sampled", False)),
-                    frame_index=int(i.get("frame_index", 0) or 0),
-                )
-                for i in items
-            ],
+            ok=ok, detail=detail, attachments=attachments
         )
 
     def GetBadges(self, request, context):
@@ -386,8 +399,15 @@ class WeJamServicer(wejam_pb2_grpc.WeJamServicer):
             ok=True, detail=f"已点击 {request.role}/{request.name} @ ({x + w // 2},{y + h // 2})")
 
 
+def _wants_fresh_qr(context) -> bool:
+    """True when the client asked this pull to re-decode the screen."""
+    for key, value in context.invocation_metadata():
+        if key == "x-wejam-qr-refresh" and value == "1":
+            return True
+    return False
+
+
 def serve():
-    install_agent_log_filter()
     machine = login.LoginMachine(
         poll_interval=float(os.environ.get("WEJAM_POLL", "1.0")),
         auto_login=os.environ.get("WEJAM_AUTO_LOGIN", "1") != "0",

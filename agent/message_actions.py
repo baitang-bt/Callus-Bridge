@@ -164,11 +164,48 @@ def invoke(chat, index, action):
     return True, f"已对第 {index} 条消息执行 {action}", text
 
 
+_VOICE_PLACEHOLDERS = frozenset({"", "[语音]", "[消息]"})
+
+
+def _clipboard_text() -> str:
+    """Read CLIPBOARD via xclip; empty string on any failure."""
+    try:
+        out = subprocess.run(
+            ["xclip", "-selection", "clipboard", "-o"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return (out.stdout or "").strip()
+    except Exception:
+        return ""
+
+
+def _strip_voice_placeholders(text: str) -> str:
+    """Drop known voice placeholders from a bubble body; keep real transcript lines."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    kept = [ln for ln in lines if ln not in _VOICE_PLACEHOLDERS]
+    return "\n".join(kept).strip()
+
+
+def _bubble_text_at(chat, index) -> str:
+    """Re-read a11y list item text for *index* after 转文字 expands under the bubble."""
+    from . import chat as chatmod
+
+    _name, messages = chatmod.list_messages(chat=chat, limit=0)
+    for msg in messages:
+        if int(msg.get("index") or 0) == int(index):
+            return (msg.get("text") or "").strip()
+    return ""
+
+
 @synchronized
 def voice_to_text(chat, index):
     """Probe voice-to-text menu labels; return (ok, detail, transcript).
 
     Opens the context menu once, picks the first matching label, dismisses on miss.
+    Prefers clipboard; if empty, re-reads the bubble a11y text (WeChat often expands
+    the transcript next to the voice bubble instead of copying).
     """
     ok, detail, _rect = _open_context_menu(chat, index)
     if not ok:
@@ -187,17 +224,10 @@ def voice_to_text(chat, index):
         return False, f"菜单项 {chosen!r} 瞬时消失", ""
     inputmod.click_at(item[0] + item[2] // 2, item[1] + item[3] // 2)
     time.sleep(1.2)
-    text = ""
-    try:
-        out = subprocess.run(
-            ["xclip", "-selection", "clipboard", "-o"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        text = (out.stdout or "").strip()
-    except Exception:
-        text = ""
+    text = _strip_voice_placeholders(_clipboard_text())
+    if not text:
+        time.sleep(0.6)
+        text = _strip_voice_placeholders(_bubble_text_at(chat, index))
     if not text:
         return True, f"已点 {chosen} 但未读到转写文本", ""
     return True, f"已对第 {index} 条消息执行 {chosen}", text

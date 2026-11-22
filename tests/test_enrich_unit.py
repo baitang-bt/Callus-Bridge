@@ -40,6 +40,32 @@ def test_enrich_voice_replaces_placeholder(monkeypatch) -> None:
     assert out["text"] == "你好啊"
 
 
+def test_enrich_voice_transcript_writes_text(monkeypatch) -> None:
+    """Dedicated voice helper writes STT text onto a placeholder row."""
+    monkeypatch.setattr(
+        enrich.message_actions,
+        "voice_to_text",
+        lambda chat, index: (True, "ok", "转写正文"),
+    )
+    out = enrich.enrich_voice_transcript(
+        {"chat": "c", "index": 1, "content_type": "voice", "text": "[语音]"}
+    )
+    assert out["text"] == "转写正文"
+
+
+def test_enrich_voice_transcript_keeps_placeholder_when_empty(monkeypatch) -> None:
+    """Empty STT leaves the voice placeholder so the host can skip voice_empty."""
+    monkeypatch.setattr(
+        enrich.message_actions,
+        "voice_to_text",
+        lambda chat, index: (True, "已点 转文字 但未读到转写文本", ""),
+    )
+    src = {"chat": "c", "index": 4, "content_type": "voice", "text": "[语音]"}
+    out = enrich.enrich_voice_transcript(src)
+    assert out["text"] == "[语音]"
+    assert out["content_type"] == "voice"
+
+
 def test_enrich_image_fills_attachments(monkeypatch) -> None:
     """Image rows without attachments get a capture fill when available."""
     item = {"kind": "image", "path": "/tmp/x.png", "sha256": "abc", "sampled": False}

@@ -23,10 +23,13 @@ proto-check:  ## 校验生成的 stub 是否与 proto 同步
 build:  ## 构建 Callus 微信镜像
 	docker build -f docker/Dockerfile -t $(IMAGE) .
 
-up:  ## 启动 Callus 会话容器（默认 127.0.0.1:7701）
+up:  ## 启动或恢复 Callus 容器（已有则 docker start，不删登录态）
 	bash docker/run.sh
 
-down:  ## 停止并删除容器（不动状态卷）
+down:  ## 停止容器（保留容器与状态卷，下次 up 可复用登录）
+	docker stop $(NAME) || true
+
+destroy:  ## 删除容器（不动状态卷；下次 up 会新建，微信可能要重登）
 	docker rm -f $(NAME)
 
 logs:  ## 跟随容器日志
