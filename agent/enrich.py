@@ -39,24 +39,32 @@ def enrich_voice_transcript(msg: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def enrich_media_attachments(msg: dict[str, Any]) -> dict[str, Any]:
+    """Crop image/emotion bubbles into local attachments when missing; never raise."""
+    out = dict(msg)
+    content_type = (out.get("content_type") or "text").strip().lower() or "text"
+    if content_type not in {"emotion", "image"}:
+        return out
+    if out.get("attachments"):
+        return out
+    chat_name = out.get("chat") or ""
+    index = int(out.get("index") or 0)
+    try:
+        ok, detail, items = capture.capture_message_media(
+            chat_name, index, kind=content_type
+        )
+        if ok and items:
+            out["attachments"] = items
+        else:
+            _log.info("auto capture skipped detail=%s", detail)
+    except Exception as exc:
+        _log.warning("auto capture failed err=%s", safe_exc(exc))
+    return out
+
+
 def enrich_inbound_message(msg: dict[str, Any]) -> dict[str, Any]:
     """Return a shallow copy with GUI-side media/voice fills when cheap enough.
 
     Failures never raise: placeholders stay so Watch/List still deliver text rows.
     """
-    out = enrich_voice_transcript(msg)
-    content_type = (out.get("content_type") or "text").strip().lower() or "text"
-    chat_name = out.get("chat") or ""
-    index = int(out.get("index") or 0)
-
-    if content_type in {"emotion", "image"} and not out.get("attachments"):
-        try:
-            ok, detail, items = capture.capture_message_media(chat_name, index)
-            if ok and items:
-                out["attachments"] = items
-            else:
-                _log.info("auto capture skipped detail=%s", detail)
-        except Exception as exc:
-            _log.warning("auto capture failed err=%s", safe_exc(exc))
-
-    return out
+    return enrich_media_attachments(enrich_voice_transcript(msg))

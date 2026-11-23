@@ -141,15 +141,19 @@ def capture_message_media(
     index: int,
     max_frames: int = 0,
     interval_ms: int = 0,
+    kind: str = "",
 ):
     """Crop the bubble at ``index``; sample frames while pixels change.
 
     When the crop is unchanged across two samples, keep one still frame and
-    set ``sampled=False``.
+    set ``sampled=False``. ``kind`` tags attachments (image/emotion); default emotion.
     """
     max_frames = max_frames or DEFAULT_MAX_FRAMES
     interval_ms = interval_ms or DEFAULT_INTERVAL_MS
     interval = max(0.05, interval_ms / 1000.0)
+    attach_kind = (kind or "emotion").strip().lower() or "emotion"
+    if attach_kind not in {"image", "emotion"}:
+        attach_kind = "emotion"
 
     ok, detail = chat.open_chat(chat_name)
     if not ok:
@@ -173,7 +177,7 @@ def capture_message_media(
             if frame_i == 0:
                 attachments.append(
                     {
-                        "kind": "emotion",
+                        "kind": attach_kind,
                         "path": path,
                         "sha256": digest,
                         "sampled": False,
@@ -189,7 +193,7 @@ def capture_message_media(
         prev_digest = digest
         attachments.append(
             {
-                "kind": "emotion",
+                "kind": attach_kind,
                 "path": path,
                 "sha256": digest,
                 "sampled": True,

@@ -25,6 +25,19 @@ from . import input as inputmod  # noqa: E402
 
 def _dict_to_message(m: dict, *, preview_only: bool = False) -> wejam_pb2.Message:
     """Build a wire Message from a chat.list_messages / capture row dict."""
+    attachments = []
+    for row in m.get("attachments") or []:
+        if not isinstance(row, dict):
+            continue
+        attachments.append(
+            wejam_pb2.MediaAttachment(
+                kind=str(row.get("kind") or ""),
+                path=str(row.get("path") or ""),
+                sha256=str(row.get("sha256") or ""),
+                sampled=bool(row.get("sampled")),
+                frame_index=int(row.get("frame_index") or 0),
+            )
+        )
     return wejam_pb2.Message(
         id=m.get("id", ""),
         chat=m.get("chat", ""),
@@ -36,6 +49,7 @@ def _dict_to_message(m: dict, *, preview_only: bool = False) -> wejam_pb2.Messag
         preview_only=preview_only,
         from_self=selflog.is_own(m.get("chat", ""), m.get("text", "")),
         content_type=m.get("content_type", "text"),
+        attachments=attachments,
         quote_text=m.get("quote_text", "") or "",
         quote_sender=m.get("quote_sender", "") or "",
     )
@@ -315,9 +329,12 @@ class WeJamServicer(wejam_pb2_grpc.WeJamServicer):
                 chat_type=info.get("chat_type", ""),
                 member_count=int(info.get("member_count") or 0),
             )
-        # Voice only: right-click 转文字 on ReadLatest (not Watch) so host gets text.
-        if (latest.get("content_type") or "").strip().lower() == "voice":
+        # Voice STT / image crop on ReadLatest only (not Watch) to avoid UI spam.
+        ctype = (latest.get("content_type") or "").strip().lower()
+        if ctype == "voice":
             latest = enrich.enrich_voice_transcript(latest)
+        elif ctype in {"image", "emotion"}:
+            latest = enrich.enrich_media_attachments(latest)
         return wejam_pb2.ReadLatestResponse(
             chat=name,
             message=_dict_to_message(latest),

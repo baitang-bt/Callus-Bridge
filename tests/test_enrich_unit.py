@@ -80,6 +80,26 @@ def test_enrich_image_fills_attachments(monkeypatch) -> None:
     assert out["attachments"] == [item]
 
 
+def test_enrich_media_attachments_passes_kind(monkeypatch) -> None:
+    """Dedicated media helper tags capture with the row content_type."""
+    seen: dict[str, str] = {}
+
+    def _cap(chat, index, **kw):
+        seen["kind"] = str(kw.get("kind") or "")
+        return (
+            True,
+            "ok",
+            [{"kind": kw.get("kind") or "emotion", "path": "/tmp/e.png", "sha256": "x"}],
+        )
+
+    monkeypatch.setattr(enrich.capture, "capture_message_media", _cap)
+    out = enrich.enrich_media_attachments(
+        {"chat": "c", "index": 5, "content_type": "image", "text": "[图片]"}
+    )
+    assert seen["kind"] == "image"
+    assert out["attachments"][0]["kind"] == "image"
+
+
 def test_enrich_failures_keep_placeholder(monkeypatch) -> None:
     """Capture/voice errors leave the original row intact."""
     monkeypatch.setattr(
