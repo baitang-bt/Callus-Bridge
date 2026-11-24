@@ -199,13 +199,25 @@ def _bubble_text_at(chat, index) -> str:
     return ""
 
 
+def _poll_voice_transcript(chat, index, *, attempts: int = 5, interval_s: float = 0.5) -> str:
+    """Poll bubble a11y text after 转文字 until a non-placeholder transcript appears."""
+    text = ""
+    for i in range(max(1, attempts)):
+        if i:
+            time.sleep(max(0.05, interval_s))
+        text = _strip_voice_placeholders(_bubble_text_at(chat, index))
+        if text:
+            return text
+    return text
+
+
 @synchronized
 def voice_to_text(chat, index):
     """Probe voice-to-text menu labels; return (ok, detail, transcript).
 
     Opens the context menu once, picks the first matching label, dismisses on miss.
-    Prefers clipboard; if empty, re-reads the bubble a11y text (WeChat often expands
-    the transcript next to the voice bubble instead of copying).
+    Prefers bubble a11y text (WeChat often expands the transcript under the voice
+    bubble); falls back to clipboard if the bubble stays empty after a short poll.
     """
     ok, detail, _rect = _open_context_menu(chat, index)
     if not ok:
@@ -223,11 +235,10 @@ def voice_to_text(chat, index):
         inputmod.tap_key("Escape")
         return False, f"菜单项 {chosen!r} 瞬时消失", ""
     inputmod.click_at(item[0] + item[2] // 2, item[1] + item[3] // 2)
-    time.sleep(1.2)
-    text = _strip_voice_placeholders(_clipboard_text())
+    time.sleep(0.8)
+    text = _poll_voice_transcript(chat, index)
     if not text:
-        time.sleep(0.6)
-        text = _strip_voice_placeholders(_bubble_text_at(chat, index))
+        text = _strip_voice_placeholders(_clipboard_text())
     if not text:
         return True, f"已点 {chosen} 但未读到转写文本", ""
     return True, f"已对第 {index} 条消息执行 {chosen}", text
